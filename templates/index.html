@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Earthquake Prediction Dashboard</title>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/styles.css') }}">
+</head>
+<body class="bg-light">
+    <nav class="navbar navbar-expand-lg navbar-dark bg-primary py-3">
+        <div class="container-fluid d-flex justify-content-between align-items-center">
+            <span class="navbar-brand fw-semibold fs-4 mb-0">Earthquake Prediction Dashboard</span>
+            <div class="d-flex align-items-center gap-2">
+                <button id="refresh-btn" class="btn btn-light btn-sm text-primary fw-semibold">
+                    Refresh Dashboard
+                </button>
+                <div id="refresh-spinner" class="spinner-border spinner-border-sm text-light d-none" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <main class="container my-4">
+        <div class="row g-4">
+            <div class="col-12 col-lg-8">
+                <section class="card shadow-sm h-100">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h2 class="h5 mb-0">Recent Earthquakes</h2>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped align-middle" id="recent-table">
+                                <thead>
+                                    <tr>
+                                        <th scope="col">Location</th>
+                                        <th scope="col">Magnitude</th>
+                                        <th scope="col">Depth (km)</th>
+                                        <th scope="col">Time</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    <tr>
+                                        <td colspan="4" class="text-center py-4 text-muted">
+                                            Loading recent earthquake data...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <p class="text-muted small mb-0" id="last-refreshed"></p>
+                    </div>
+                </section>
+            </div>
+
+            <div class="col-12 col-lg-4">
+                <section class="card shadow-sm mb-4">
+                    <div class="card-header">
+                        <h2 class="h5 mb-0">Next Prediction</h2>
+                    </div>
+                    <div class="card-body text-center">
+                        <div id="prediction-card" class="prediction-card">
+                            <span class="text-uppercase text-muted small">Predicted Next Earthquake Magnitude</span>
+                            <h3 id="predicted-magnitude" class="display-5 fw-bold my-2">--</h3>
+                            <p id="predicted-location" class="text-muted mb-2">Location pending...</p>
+                            <span id="prediction-method" class="badge bg-secondary"></span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="card shadow-sm mb-4">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h2 class="h5 mb-0">Recommended Precautions</h2>
+                        <span id="precaution-level" class="badge bg-info-subtle text-info-emphasis">Awaiting data</span>
+                    </div>
+                    <div class="card-body">
+                        <ul id="precautions-list" class="list-group list-group-flush">
+                            <li class="list-group-item text-muted text-center">
+                                Precaution guidance will appear here once a prediction is available.
+                            </li>
+                        </ul>
+                    </div>
+                </section>
+
+                <section class="card shadow-sm">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h2 class="h5 mb-0">Previous Magnitudes</h2>
+                        <span class="text-muted small">Last 5 events</span>
+                    </div>
+                    <div class="card-body">
+                        <ul class="list-group list-group-flush" id="previous-list">
+                            <li class="list-group-item text-muted text-center">
+                                Loading previous magnitudes...
+                            </li>
+                        </ul>
+                        <canvas id="magnitude-chart" height="180" class="mt-3"></canvas>
+                    </div>
+                </section>
+            </div>
+        </div>
+    </main>
+
+    <div id="global-loader" class="global-loader d-none">
+        <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Loading...</span>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+    <script src="{{ url_for('static', filename='js/app.js') }}"></script>
+</body>
+</html>
+
