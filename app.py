@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -20,6 +21,7 @@ BASE_DIR = Path(__file__).resolve().parent
 MODEL_ARCH_PATH = BASE_DIR / "earthquake_transfer_model_architecture.json"
 MODEL_WEIGHTS_PATH = BASE_DIR / "earthquake_transfer_model.weights.h5"
 SCALER_PATH = BASE_DIR / "earthquake_scaler.pkl"
+HISTORICAL_CSV_PATH = BASE_DIR / "earthquake_1995-2023.csv"
 DEFAULT_MIN_MAGNITUDE = 4.0
 RECENT_LOOKBACK_HOURS = 48
 
@@ -42,6 +44,8 @@ class EarthquakePredictor:
         self.scaler = self._load_scaler()
         self.recent_events: Optional[pd.DataFrame] = None
         self.last_refreshed: Optional[datetime] = None
+        self.historical_data: Optional[pd.DataFrame] = None
+        self._load_historical_data()
 
     def _load_model(self):
         if keras is None:
@@ -73,6 +77,132 @@ class EarthquakePredictor:
             except Exception as exc:  # pragma: no cover
                 logger.warning("Failed to load scaler. Proceeding without scaling. %s", exc)
         return None
+
+    def _load_historical_data(self):
+        """Load historical earthquake data from CSV file."""
+        if HISTORICAL_CSV_PATH.exists():
+            try:
+                self.historical_data = pd.read_csv(HISTORICAL_CSV_PATH)
+                logger.info(f"Loaded historical data: {len(self.historical_data)} records.")
+            except Exception as exc:
+                logger.warning("Failed to load historical CSV. Location-based prediction will be limited. %s", exc)
+                self.historical_data = None
+        else:
+            logger.warning("Historical CSV file not found. Location-based prediction will be limited.")
+            self.historical_data = None
+
+    @staticmethod
+    def _extract_location_keywords(place: str) -> List[str]:
+        """
+        Extract location keywords (city and country) from place string.
+        Example: "101 km ESE of Yamada, Japan" -> ["yamada", "japan"]
+        Example: "southeast of Easter Island" -> ["easter island", "easter", "island"]
+        """
+        if not place or pd.isna(place):
+            return []
+        
+        keywords = []
+        # Remove distance/direction prefixes like "101 km ESE of", "southeast of", etc.
+        place_clean = place.lower()
+        
+        # Remove common directional prefixes
+        directional_prefixes = [
+            "north of", "south of", "east of", "west of",
+            "northeast of", "northwest of", "southeast of", "southwest of",
+            "nne of", "ene of", "ese of", "sse of", "ssw of", "wsw of", "wnw of", "nnw of",
+            "km n of", "km s of", "km e of", "km w of",
+            "km ne of", "km nw of", "km se of", "km sw of"
+        ]
+        
+        for prefix in directional_prefixes:
+            if place_clean.startswith(prefix):
+                place_clean = place_clean[len(prefix):].strip()
+                break
+            elif f" {prefix} " in place_clean:
+                place_clean = place_clean.split(f" {prefix} ", 1)[-1]
+                break
+        
+        # Remove distance prefixes like "101 km", "50 km", etc.
+        place_clean = re.sub(r'^\d+\s*km\s+', '', place_clean).strip()
+        
+        # Split by comma to get city and country
+        parts = [p.strip() for p in place_clean.split(",")]
+        
+        # Add all parts as keywords
+        for part in parts:
+            if part:
+                keywords.append(part.lower())
+                # Also add individual words for multi-word locations like "Easter Island"
+                words = part.lower().split()
+                if len(words) > 1:
+                    keywords.extend(words)
+        
+        # Remove duplicates while preserving order
+        seen = set()
+        unique_keywords = []
+        for kw in keywords:
+            if kw and kw not in seen:
+                seen.add(kw)
+                unique_keywords.append(kw)
+        
+        return unique_keywords
+
+    def _filter_historical_by_location(self, location_place: str) -> pd.DataFrame:
+        """
+        Filter historical earthquake data by matching location keywords.
+        Returns filtered DataFrame with earthquakes from the same city/country.
+        Handles both 'place' (USGS format) and 'location'/'country'/'continent' (CSV format) columns.
+        """
+        if self.historical_data is None or self.historical_data.empty:
+            return pd.DataFrame()
+        
+        location_keywords = self._extract_location_keywords(location_place)
+        if not location_keywords:
+            return pd.DataFrame()
+        
+        # Determine which column to use for filtering
+        location_column = None
+        if 'place' in self.historical_data.columns:
+            location_column = 'place'
+        elif 'location' in self.historical_data.columns:
+            location_column = 'location'
+        else:
+            logger.warning("Historical data does not have 'place' or 'location' column. Trying 'country' and 'continent'.")
+            # Try using country and continent columns
+            if 'country' in self.historical_data.columns or 'continent' in self.historical_data.columns:
+                mask = pd.Series([False] * len(self.historical_data))
+                for keyword in location_keywords:
+                    if 'country' in self.historical_data.columns:
+                        mask |= self.historical_data['country'].astype(str).str.lower().str.contains(keyword, na=False, regex=False)
+                    if 'continent' in self.historical_data.columns:
+                        mask |= self.historical_data['continent'].astype(str).str.lower().str.contains(keyword, na=False, regex=False)
+                
+                filtered = self.historical_data[mask].copy()
+                if len(filtered) > 0:
+                    logger.info(f"Filtered {len(filtered)} historical earthquakes for location: {location_place}")
+                return filtered
+            else:
+                logger.warning("Historical data does not have location-related columns. Cannot filter by location.")
+                return pd.DataFrame()
+        
+        # Filter historical data where location column contains any of the location keywords
+        mask = pd.Series([False] * len(self.historical_data))
+        for keyword in location_keywords:
+            mask |= self.historical_data[location_column].astype(str).str.lower().str.contains(keyword, na=False, regex=False)
+        
+        # Also try matching with country and continent if available
+        if 'country' in self.historical_data.columns:
+            for keyword in location_keywords:
+                mask |= self.historical_data['country'].astype(str).str.lower().str.contains(keyword, na=False, regex=False)
+        
+        if 'continent' in self.historical_data.columns:
+            for keyword in location_keywords:
+                mask |= self.historical_data['continent'].astype(str).str.lower().str.contains(keyword, na=False, regex=False)
+        
+        filtered = self.historical_data[mask].copy()
+        logger.info(f"Filtered {len(filtered)} historical earthquakes for location: {location_place}")
+        
+        return filtered
 
     def refresh_recent_events(self) -> pd.DataFrame:
         """Fetch latest earthquakes from USGS and cache them."""
@@ -149,6 +279,22 @@ class EarthquakePredictor:
                 "method": "fallback",
             }
 
+        # Get the most recent earthquake location
+        most_recent_location = df.iloc[0]["place"] if not df.empty else "Unknown Location"
+        
+        # Filter historical data by location
+        historical_filtered = self._filter_historical_by_location(most_recent_location)
+        
+        # Use historical filtered data if available, otherwise use recent events
+        if not historical_filtered.empty:
+            logger.info(f"Using {len(historical_filtered)} historical earthquakes for location-based prediction.")
+            prediction_df = historical_filtered
+            data_source = "historical_location"
+        else:
+            logger.info("No historical data found for location. Using recent events.")
+            prediction_df = df
+            data_source = "recent"
+
         previous_events = (
             df[["place", "magnitude", "time", "depth"]]
             .head(5)
@@ -159,18 +305,13 @@ class EarthquakePredictor:
             if isinstance(event.get("time"), pd.Timestamp):
                 event["time"] = event["time"].isoformat()
 
-        # Aggregate features (mirrors notebook logic)
-        features = {
-            "cdi": df["cdi"].mean() if "cdi" in df else 3.0,
-            "mmi": df["mmi"].mean() if "mmi" in df else 3.0,
-            "sig": df["sig"].mean() if "sig" in df else 400,
-            "nst": df["nst"].mean() if "nst" in df else 40,
-            "dmin": df["dmin"].mean() if "dmin" in df else 2.0,
-            "gap": df["gap"].mean() if "gap" in df else 45,
-            "depth": df["depth"].mean(),
-            "latitude": df["latitude"].mean(),
-            "longitude": df["longitude"].mean(),
-        }
+        # Aggregate features from the prediction dataset (historical filtered or recent)
+        features = {}
+        for key in ["cdi", "mmi", "sig", "nst", "dmin", "gap", "depth", "latitude", "longitude"]:
+            if key in prediction_df.columns:
+                features[key] = prediction_df[key].mean() if not prediction_df[key].dropna().empty else None
+            else:
+                features[key] = None
 
         feature_defaults = {
             "cdi": 3.0,
@@ -179,9 +320,9 @@ class EarthquakePredictor:
             "nst": 40,
             "dmin": 2.0,
             "gap": 45,
-            "depth": float(df["depth"].median()) if not df["depth"].dropna().empty else 10.0,
-            "latitude": float(df["latitude"].median()) if "latitude" in df else 0.0,
-            "longitude": float(df["longitude"].median()) if "longitude" in df else 0.0,
+            "depth": float(prediction_df["depth"].median()) if "depth" in prediction_df.columns and not prediction_df["depth"].dropna().empty else 10.0,
+            "latitude": float(prediction_df["latitude"].median()) if "latitude" in prediction_df.columns and not prediction_df["latitude"].dropna().empty else 0.0,
+            "longitude": float(prediction_df["longitude"].median()) if "longitude" in prediction_df.columns and not prediction_df["longitude"].dropna().empty else 0.0,
         }
 
         for key, default in feature_defaults.items():
@@ -197,15 +338,19 @@ class EarthquakePredictor:
 
         if self.model is not None:
             predicted_mag = float(self.model.predict(feature_array, verbose=0)[0][0])
-            method = "model"
+            method = f"model_{data_source}"
         else:
-            # Statistical fallback: mean + small adjustment based on std
-            mean_mag = df["magnitude"].mean()
-            std_mag = df["magnitude"].std() if len(df) > 1 else 0.2
-            predicted_mag = float(np.clip(mean_mag + 0.1 * std_mag, 0, 10))
-            method = "statistical"
-
-        most_recent_location = previous_events[0]["place"] if previous_events else "Unknown Location"
+            # Statistical fallback: use historical data statistics if available
+            if not historical_filtered.empty and "magnitude" in historical_filtered.columns:
+                mean_mag = historical_filtered["magnitude"].mean()
+                std_mag = historical_filtered["magnitude"].std() if len(historical_filtered) > 1 else 0.2
+                predicted_mag = float(np.clip(mean_mag + 0.1 * std_mag, 0, 10))
+                method = f"statistical_historical_location"
+            else:
+                mean_mag = df["magnitude"].mean()
+                std_mag = df["magnitude"].std() if len(df) > 1 else 0.2
+                predicted_mag = float(np.clip(mean_mag + 0.1 * std_mag, 0, 10))
+                method = f"statistical_recent"
 
         precautions = self._precautions_for(predicted_mag)
 
